@@ -103,8 +103,8 @@
    103|          </svg>
    104|        </div>
    105|        <div className="side-wordmark">
-   106|          <div className="side-word">seerr</div>
-   107|          <div className="side-sub">v2 · recommendations</div>
+          <div className="side-word">mediocre</div>
+          <div className="side-sub">recommendations</div>
    108|        </div>
    109|      </div>
    110|

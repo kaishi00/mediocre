@@ -10,6 +10,10 @@ Mediocre is a fast, self-hosted recommendation system that learns what you like 
 
 Because every recommendation app promises to change your life. This one just gives you solid suggestions and gets out of your way. No gamification, no social feeds, no dark patterns. Just... adequate recommendations. 😐
 
+![Mediocre — For You tab](docs/assets/main-view.png)
+
+*The **For You** tab — personalized picks with a Top Pick hero, match scores, and quick actions (Request / Mark watched)*
+
 ## What It Actually Does
 
 - **Learns your taste** from watch history + explicit ratings (1–10)
