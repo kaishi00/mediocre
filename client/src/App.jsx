@@ -1,1122 +1,501 @@
-import React, { useState, useEffect, useLayoutEffect, useCallback, useRef, useMemo } from 'react';
-
-// ─── Constants ───────────────────────────────────────────────────
-const TABS = ['for_you', 'movies', 'tv', 'anime', 'trending', 'hidden_gems'];
-const MAX_AUTO_CHAIN = 3;
-const DISMISSED_TTL = 24 * 60 * 60 * 1000;
-
-const ACCENT_HUES = { amber: 65, violet: 295, teal: 195, rose: 10, lime: 130 };
-const DEFAULTS = { variant: 'bold', accent: 'amber', bg: 'ink', hover: 'panel', shelves: true, cardMin: 170 };
-
-const API_BASE = '/api/v2/recommendations/ganyu';
-
-// ─── Persistence utils ───────────────────────────────────────────
-function loadTweaks() {
-  try {
-    const raw = localStorage.getItem('seerrv2_tweaks');
-    return { ...DEFAULTS, ...(raw ? JSON.parse(raw) : {}) };
-  } catch { return { ...DEFAULTS }; }
-}
-
-function getDismissed(tab) {
-  try {
-    const raw = localStorage.getItem(`seerrv2_dismissed_${tab}`);
-    if (!raw) return new Set();
-    const parsed = JSON.parse(raw);
-    const now = Date.now();
-    return new Set(parsed.filter(e => now - e.t < DISMISSED_TTL).map(e => e.id));
-  } catch { return new Set(); }
-}
-
-function addDismissed(tab, id) {
-  try {
-    const raw = localStorage.getItem(`seerrv2_dismissed_${tab}`);
-    const existing = raw ? JSON.parse(raw) : [];
-    existing.push({ id, t: Date.now() });
-    localStorage.setItem(`seerrv2_dismissed_${tab}`, JSON.stringify(existing));
-  } catch {}
-}
-
-function getHidden(tab) {
-  try {
-    const raw = localStorage.getItem(`seerrv2_hidden_${tab}`);
-    return raw ? new Set(JSON.parse(raw)) : new Set();
-  } catch { return new Set(); }
-}
-
-function addHidden(tab, id) {
-  try {
-    const hidden = getHidden(tab);
-    hidden.add(id);
-    localStorage.setItem(`seerrv2_hidden_${tab}`, JSON.stringify([...hidden]));
-  } catch {}
-}
-
-function getItemUrl(item) {
-  if (item.tmdbId)
-    return `https://www.themoviedb.org/${item.mediaType === 'movie' ? 'movie' : 'tv'}/${item.tmdbId}`;
-  return null;
-}
-
-function hashHue(str) {
-  let h = 0;
-  for (let i = 0; i < str.length; i++) h = (h * 31 + str.charCodeAt(i)) % 360;
-  return h;
-}
-
-// ─── Icons ───────────────────────────────────────────────────────
-const Icon = ({ d, size = 16, fill = false, stroke = 1.5, ...rest }) => (
-  <svg width={size} height={size} viewBox="0 0 24 24"
-    fill={fill ? 'currentColor' : 'none'}
-    stroke="currentColor" strokeWidth={stroke}
-    strokeLinecap="round" strokeLinejoin="round" {...rest}>
-    <path d={d} />
-  </svg>
-);
-
-const Icons = {
-  film:     (p) => <Icon d="M4 4h16v16H4z M4 9h16 M4 15h16 M8 4v16 M16 4v16" {...p} />,
-  tv:       (p) => <Icon d="M3 6h18v12H3z M8 21h8 M12 18v3" {...p} />,
-  sparkle:  (p) => <Icon d="M12 3l1.5 5.5L19 10l-5.5 1.5L12 17l-1.5-5.5L5 10l5.5-1.5z M19 3v3 M17.5 4.5h3" {...p} />,
-  refresh:  (p) => <Icon d="M3 12a9 9 0 0 1 15.3-6.3L21 8 M21 3v5h-5 M21 12a9 9 0 0 1-15.3 6.3L3 16 M3 21v-5h5" {...p} />,
-  search:   (p) => <Icon d="M11 11m-7 0a7 7 0 1 0 14 0a7 7 0 1 0-14 0 M21 21l-4.3-4.3" {...p} />,
-  plus:     (p) => <Icon d="M12 5v14 M5 12h14" {...p} />,
-  check:    (p) => <Icon d="M5 12l5 5L20 7" {...p} />,
-  clock:    (p) => <Icon d="M12 2a10 10 0 1 0 0 20a10 10 0 0 0 0-20 M12 7v5l3 3" {...p} />,
-  x:        (p) => <Icon d="M6 6l12 12 M6 18L18 6" {...p} />,
-  link:     (p) => <Icon d="M10 14a5 5 0 0 0 7 0l3-3a5 5 0 0 0-7-7l-1 1 M14 10a5 5 0 0 0-7 0l-3 3a5 5 0 0 0 7 7l1-1" {...p} />,
-  star:     (p) => <Icon d="M12 2l3 7 7.5.6-5.7 5 1.7 7.4L12 18l-6.5 4 1.7-7.4L1.5 9.6 9 9z" {...p} fill />,
-  chev:     (p) => <Icon d="M9 6l6 6-6 6" {...p} />,
-  settings: (p) => <Icon d="M12 15a3 3 0 1 0 0-6a3 3 0 0 0 0 6z M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" {...p} />,
-};
-
-// ─── Sidebar ─────────────────────────────────────────────────────
-function Sidebar({ activeTab, onTab, onRefresh, counts, tweaks }) {
-  return (
-    <aside className="side">
-      <div className="side-brand">
-        <div className="side-mark">
-          <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
-            <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="1.5"/>
-            <circle cx="12" cy="12" r="4" fill="currentColor"/>
-            <circle cx="18" cy="7" r="1.5" fill="currentColor"/>
-          </svg>
-        </div>
-        <div className="side-wordmark">
-          <div className="side-word">seerr</div>
-          <div className="side-sub">v2 · recommendations</div>
-        </div>
-      </div>
-
-      <div className="side-group">
-        <div className="side-label">Discover</div>
-        <button className={`side-item ${activeTab === 'for_you' ? 'on' : ''}`} onClick={() => onTab('for_you')}>
-          <Icons.sparkle size={16}/> <span>For You</span>
-          <em className="side-count">{counts.for_you}</em>
-        </button>
-        <button className={`side-item ${activeTab === 'movies' ? 'on' : ''}`} onClick={() => onTab('movies')}>
-          <Icons.film size={16}/> <span>Movies</span>
-          <em className="side-count">{counts.movies}</em>
-        </button>
-        <button className={`side-item ${activeTab === 'tv' ? 'on' : ''}`} onClick={() => onTab('tv')}>
-          <Icons.tv size={16}/> <span>TV Shows</span>
-          <em className="side-count">{counts.tv}</em>
-        </button>
-        <button className={`side-item ${activeTab === 'anime' ? 'on' : ''}`} onClick={() => onTab('anime')}>
-          <Icons.sparkle size={16}/> <span>Anime</span>
-          <em className="side-count">{counts.anime}</em>
-        </button>
-        <button className={`side-item ${activeTab === 'trending' ? 'on' : ''}`} onClick={() => onTab('trending')}>
-          <Icons.sparkle size={16}/> <span>Trending</span>
-          <em className="side-count">{counts.trending}</em>
-        </button>
-        <button className={`side-item ${activeTab === 'hidden_gems' ? 'on' : ''}`} onClick={() => onTab('hidden_gems')}>
-          <Icons.sparkle size={16}/> <span>Hidden Gems</span>
-          <em className="side-count">{counts.hidden_gems}</em>
-        </button>
-      </div>
-
-      <div className="side-spacer"/>
-
-      <div className="side-foot">
-        <button className="side-foot-btn" onClick={onRefresh} title="Refresh recommendations">
-          <Icons.refresh size={14}/> <span>Refresh</span>
-        </button>
-        <div className="side-foot-user">
-          <div className="side-foot-avatar">G</div>
-          <div>
-            <div className="side-foot-name">Ganyu</div>
-            <div className="side-foot-sub">{tweaks.variant === 'bold' ? 'Bold' : 'Refined'} theme</div>
-          </div>
-        </div>
-      </div>
-    </aside>
-  );
-}
-
-// ─── TopBar ──────────────────────────────────────────────────────
-function TopBar({ activeTab, query, onQuery, density, onDensity, onOpenTweaks }) {
-  const titles = { for_you: 'For You', movies: 'Movies', tv: 'TV Shows', anime: 'Anime', trending: 'Trending', hidden_gems: 'Hidden Gems' };
-  const subs = {
-    for_you: 'Personalized picks from the SeerrV2 recommendation engine',
-    movies: 'Movie recommendations tuned to your taste profile',
-    tv: 'TV show recommendations based on your viewing history',
-    anime: 'Anime recommendations from the SeerrV2 engine',
-    trending: 'Currently popular titles you might have missed',
-    hidden_gems: 'Underrated titles that deserve your attention',
-  };
-  return (
-    <header className="top">
-      <div className="top-head">
-        <div className="top-crumb">Discover <span className="top-sep">/</span> <strong>{titles[activeTab]}</strong></div>
-        <h1 className="top-title">{titles[activeTab]}</h1>
-        <p className="top-sub">{subs[activeTab]}</p>
-      </div>
-      <div className="top-actions">
-        <div className="top-search">
-          <Icons.search size={14}/>
-          <input
-            value={query}
-            onChange={e => onQuery(e.target.value)}
-            placeholder="Filter this list…"
-          />
-        </div>
-        <div className="top-toggle">
-          <button className={density === 'compact' ? 'on' : ''} onClick={() => onDensity('compact')} title="Compact">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
-              <rect x="3" y="3" width="8" height="8" rx="1"/>
-              <rect x="13" y="3" width="8" height="8" rx="1"/>
-              <rect x="3" y="13" width="8" height="8" rx="1"/>
-              <rect x="13" y="13" width="8" height="8" rx="1"/>
-            </svg>
-          </button>
-          <button className={density === 'cozy' ? 'on' : ''} onClick={() => onDensity('cozy')} title="Cozy">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
-              <rect x="3" y="3" width="6" height="18" rx="1"/>
-              <rect x="10" y="3" width="6" height="18" rx="1"/>
-              <rect x="17" y="3" width="4" height="18" rx="1"/>
-            </svg>
-          </button>
-          <button className={density === 'comfy' ? 'on' : ''} onClick={() => onDensity('comfy')} title="Comfortable">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
-              <rect x="3" y="3" width="8" height="18" rx="1"/>
-              <rect x="13" y="3" width="8" height="18" rx="1"/>
-            </svg>
-          </button>
-        </div>
-        <button className="top-icon-btn" title="Tweaks" onClick={onOpenTweaks}><Icons.settings size={16}/></button>
-      </div>
-    </header>
-  );
-}
-
-// ─── Hero (bold variant) ─────────────────────────────────────────
-function Hero({ item, onRequest, onWatched, requesting, reqSuccess }) {
-  if (!item) return null;
-  return (
-    <div className="hero">
-      {item.backdropUrl
-        ? <div className="hero-bg" style={{ backgroundImage: `url("${item.backdropUrl}")` }}/>
-        : <div className="hero-bg" style={{ background: `oklch(0.28 0.12 ${hashHue(item.title)})` }}/>
-      }
-      <div className="hero-scrim"/>
-      <div className="hero-body">
-        <div className="hero-eyebrow">
-          <span className="hero-chip">Top pick for you</span>
-          <span className="hero-dot"/>
-          <span className="hero-match">via {item.source}</span>
-        </div>
-        <h2 className="hero-title">{item.title}</h2>
-        <div className="hero-meta">
-          <span>{item.year}</span>
-          {item.rating > 0 && <>
-            <span className="hero-dot"/>
-            <span className="hero-rating"><Icons.star size={12}/> {item.rating}</span>
-          </>}
-          {item.score !== undefined && item.score !== null && (
-            <>
-              <span className="hero-dot"/>
-              <span className="hero-match">{Math.round(item.score * 100)}% match</span>
-            </>
-          )}
-          {item.genres?.length > 0 && <>
-            <span className="hero-dot"/>
-            <span>{item.genres.slice(0, 3).join(' · ')}</span>
-          </>}
-        </div>
-        {item.overview && <p className="hero-overview">{item.overview}</p>}
-        <div className="hero-actions">
-          <button
-            className="btn btn-primary btn-lg"
-            disabled={requesting || reqSuccess || item.requested}
-            onClick={() => onRequest(item)}
-          >
-            {reqSuccess ? <><Icons.check size={14}/> Requested</>
-              : item.requested ? <><Icons.clock size={14}/> Pending</>
-              : <><Icons.plus size={14}/> Request</>}
-          </button>
-          <button className="btn btn-ghost btn-lg" onClick={() => onWatched(item)}>
-            <Icons.check size={14}/> Mark watched
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// ─── Card ────────────────────────────────────────────────────────
-function Card({ item, onRequest, onWatched, onDismiss, onOpen, requesting, watching, dismissing, reqSuccess }) {
-  const accentHue = item.accentHue ?? hashHue(item.title);
-  const accent = `oklch(0.62 0.18 ${accentHue})`;
-  return (
-    <div
-      className="card"
-      style={{ '--item-accent': accent }}
-      onClick={() => onOpen(item)}
-    >
-      <div className="card-poster">
-        {item.posterUrl
-          ? <img src={item.posterUrl} alt={item.title} loading="lazy"/>
-          : <div className="card-poster-empty">?</div>
-        }
-        <div className="card-sheen"/>
-      </div>
-
-      <div className="card-foot">
-        <div className="card-foot-title">{item.title}</div>
-        <div className="card-foot-meta">
-          <span>{item.year}</span>
-          {item.rating > 0 && <>
-            <span className="card-foot-sep">·</span>
-            <span className="card-foot-rating"><Icons.star size={10}/> {item.rating}</span>
-          </>}
-          {item.score !== undefined && item.score !== null && (
-            <>
-              <span className="card-foot-sep">·</span>
-              <span className="card-foot-rating">{Math.round(item.score * 100)}%</span>
-            </>
-          )}
-        </div>
-      </div>
-
-      <div className={`card-source s-${item.source}`}>
-        {item.source === 'seerrv2' ? 'S' : '?'}
-      </div>
-
-      {item.requested && !reqSuccess && (
-        <div className="card-pill pill-pending">
-          <Icons.clock size={10}/> Pending
-        </div>
-      )}
-      {reqSuccess && (
-        <div className="card-pill pill-done">
-          <Icons.check size={10}/> Requested
-        </div>
-      )}
-
-      <div className="card-panel">
-        <div className="card-panel-inner">
-          <div className="card-panel-head">
-            <div className="card-panel-title">{item.title}</div>
-            <div className="card-panel-meta">
-              <span>{item.year}</span>
-              {item.runtime && <><span>·</span><span>{item.runtime}m</span></>}
-              {item.seasons && <><span>·</span><span>{item.seasons} season{item.seasons > 1 ? 's' : ''}</span></>}
-              {item.episodes && <><span>·</span><span>{item.episodes} ep</span></>}
-              {item.rating > 0 && <><span>·</span><span className="card-panel-rating"><Icons.star size={10}/> {item.rating}</span></>}
-              {item.score !== undefined && item.score !== null && (
-                <>
-                  <span>·</span>
-                  <span className="card-panel-rating">{Math.round(item.score * 100)}% match</span>
-                </>
-              )}
-            </div>
-          </div>
-          {item.genres?.length > 0 && (
-            <div className="card-panel-genres">
-              {item.genres.slice(0, 3).map(g => <span key={g} className="card-panel-genre">{g}</span>)}
-            </div>
-          )}
-          {item.overview && <p className="card-panel-overview">{item.overview}</p>}
-          <div className="card-panel-source">
-            <span className={`card-panel-src-badge s-${item.source}`}>{item.source}</span>
-            <span>via SeerrV2 recommendation engine</span>
-          </div>
-          <div className="card-panel-actions">
-            <button
-              className="btn btn-primary btn-sm"
-              disabled={requesting || reqSuccess || item.requested || !item.tmdbId}
-              onClick={e => { e.stopPropagation(); onRequest(item); }}
-            >
-              {requesting ? '…'
-                : reqSuccess ? <><Icons.check size={13}/> Requested</>
-                : item.requested ? <><Icons.clock size={13}/> Pending</>
-                : <><Icons.plus size={13}/> Request</>}
-            </button>
-            <button
-              className="btn btn-ghost btn-sm"
-              disabled={watching}
-              onClick={e => { e.stopPropagation(); onWatched(item); }}
-              title="Mark watched"
-            >
-              <Icons.check size={13}/>
-            </button>
-            <button
-              className="btn btn-ghost btn-sm"
-              disabled={dismissing}
-              onClick={e => { e.stopPropagation(); onDismiss(item); }}
-              title="Not interested"
-            >
-              <Icons.x size={13}/>
-            </button>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// ─── Shelf (bold variant) ─────────────────────────────────────────
-function Shelf({ title, subtitle, items, cardProps }) {
-  const ref = useRef(null);
-  const scroll = (dir) => {
-    if (!ref.current) return;
-    ref.current.scrollBy({ left: dir * ref.current.clientWidth * 0.8, behavior: 'smooth' });
-  };
-  return (
-    <section className="shelf">
-      <div className="shelf-head">
-        <div>
-          <h3 className="shelf-title">{title}</h3>
-          <p className="shelf-sub">{subtitle}</p>
-        </div>
-        <div className="shelf-nav">
-          <button onClick={() => scroll(-1)}><Icons.chev size={14} style={{ transform: 'rotate(180deg)' }}/></button>
-          <button onClick={() => scroll(1)}><Icons.chev size={14}/></button>
-        </div>
-      </div>
-      <div className="shelf-track" ref={ref}>
-        {items.map(item => (
-          <div className="shelf-cell" key={item.id}>
-            <Card
-              item={item}
-              onRequest={cardProps.onRequest}
-              onWatched={cardProps.onWatched}
-              onDismiss={cardProps.onDismiss}
-              onOpen={cardProps.onOpen}
-              requesting={cardProps.requesting?.[item.id]}
-              watching={cardProps.watching?.[item.id]}
-              dismissing={cardProps.dismissing?.[item.id]}
-              reqSuccess={cardProps.reqSuccess?.[item.id]}
-            />
-          </div>
-        ))}
-      </div>
-    </section>
-  );
-}
-
-// ─── RatingPicker (5-star modal) ─────────────────────────────────
-function RatingPicker({ item, action, onConfirm, onSkip, onCancel }) {
-  const [hover, setHover] = useState(0);
-  const [committed, setCommitted] = useState(0);
-  const display = hover || committed;
-  const stars = [1, 2, 3, 4, 5];
-
-  const handleClick = (val) => {
-    setCommitted(val);
-    setTimeout(() => onConfirm(val * 2), 150); // convert to 1–10 scale
-  };
-
-  return (
-    <div className="modal-backdrop" onClick={onCancel}>
-      <div className="modal" onClick={e => e.stopPropagation()}>
-        <div className="modal-eyebrow">{action === 'watched' ? 'You watched' : 'Not interested in'}</div>
-        <div className="modal-title">{item.title}</div>
-        <div className="modal-sub">
-          {action === 'watched'
-            ? 'Rate it so we can tune your recommendations'
-            : 'How bad was it? (optional)'}
-        </div>
-        <div className="rating" onMouseLeave={() => setHover(0)}>
-          {stars.map(i => {
-            const leftVal = i - 0.5;
-            const rightVal = i;
-            const leftLit = display >= leftVal;
-            const rightLit = display >= rightVal;
-            return (
-              <div key={i} className="rating-star-wrap">
-                <div className="rating-halves">
-                  <button
-                    className="rating-half"
-                    onMouseEnter={() => setHover(leftVal)}
-                    onClick={() => handleClick(leftVal)}
-                  />
-                  <button
-                    className="rating-half"
-                    onMouseEnter={() => setHover(rightVal)}
-                    onClick={() => handleClick(rightVal)}
-                  />
-                </div>
-                <svg className="rating-glyph" viewBox="0 0 24 24" width="40" height="40" aria-hidden>
-                  <defs>
-                    <clipPath id={`clp-${i}`}><rect x="0" y="0" width="12" height="24"/></clipPath>
-                  </defs>
-                  <path className="rating-bg" d="M12 2l3 7 7.5.6-5.7 5 1.7 7.4L12 18l-6.5 4 1.7-7.4L1.5 9.6 9 9z"/>
-                  {leftLit && <path className="rating-fg" clipPath={`url(#clp-${i})`} d="M12 2l3 7 7.5.6-5.7 5 1.7 7.4L12 18l-6.5 4 1.7-7.4L1.5 9.6 9 9z"/>}
-                  {rightLit && <path className="rating-fg" d="M12 2l3 7 7.5.6-5.7 5 1.7 7.4L12 18l-6.5 4 1.7-7.4L1.5 9.6 9 9z"/>}
-                </svg>
-              </div>
-            );
-          })}
-        </div>
-        <div className="rating-value">{display ? `${display.toFixed(1)} / 5` : 'Hover to rate'}</div>
-        <div className="modal-actions">
-          <button className="btn btn-ghost" onClick={onSkip}>Skip rating</button>
-          <button className="btn btn-primary" onClick={onCancel}>Close</button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// ─── DetailDrawer ────────────────────────────────────────────────
-function DetailDrawer({ item, onClose, onRequest, onWatched, onDismiss, requesting, reqSuccess }) {
-  useEffect(() => {
-    const onEsc = (e) => e.key === 'Escape' && onClose();
-    document.addEventListener('keydown', onEsc);
-    return () => document.removeEventListener('keydown', onEsc);
-  }, [onClose]);
-
-  if (!item) return null;
-  const extUrl = getItemUrl(item);
-
-  return (
-    <div className="drawer-backdrop" onClick={onClose}>
-      <div className="drawer" onClick={e => e.stopPropagation()}>
-        {item.backdropUrl
-          ? <div className="drawer-bg" style={{ backgroundImage: `url("${item.backdropUrl}")` }}/>
-          : <div className="drawer-bg" style={{ background: `oklch(0.25 0.1 ${hashHue(item.title)})` }}/>
-        }
-        <div className="drawer-scrim"/>
-        <button className="drawer-close" onClick={onClose}><Icons.x size={18}/></button>
-        <div className="drawer-body">
-          <div className="drawer-poster">
-            {item.posterUrl
-              ? <img src={item.posterUrl} alt=""/>
-              : <div style={{ width: '100%', height: '100%', background: `oklch(0.28 0.1 ${hashHue(item.title)})` }}/>
-            }
-          </div>
-          <div className="drawer-info">
-            <div className="drawer-eyebrow">
-              <span className={`card-panel-src-badge s-${item.source}`}>{item.source}</span>
-              <span>Recommended for you</span>
-            </div>
-            <h2 className="drawer-title">{item.title}</h2>
-            <div className="drawer-meta">
-              <span>{item.year}</span>
-              {item.runtime && <><span>·</span><span>{item.runtime} min</span></>}
-              {item.seasons && <><span>·</span><span>{item.seasons} seasons</span></>}
-              {item.episodes && <><span>·</span><span>{item.episodes} episodes</span></>}
-              {item.rating > 0 && <><span>·</span><span className="drawer-rating"><Icons.star size={12}/> {item.rating}</span></>}
-              {item.score !== undefined && item.score !== null && (
-                <>
-                  <span>·</span>
-                  <span className="drawer-rating">{Math.round(item.score * 100)}% match</span>
-                </>
-              )}
-            </div>
-            {item.genres?.length > 0 && (
-              <div className="drawer-genres">
-                {item.genres.map(g => <span key={g} className="drawer-genre">{g}</span>)}
-              </div>
-            )}
-            {item.overview && <p className="drawer-overview">{item.overview}</p>}
-            {extUrl && (
-              <a href={extUrl} target="_blank" rel="noopener noreferrer" className="drawer-ext-link" onClick={e => e.stopPropagation()}>
-                <Icons.link size={13}/> Open on TMDb
-              </a>
-            )}
-            <div className="drawer-actions">
-              <button
-                className="btn btn-primary btn-lg"
-                disabled={requesting || reqSuccess || item.requested || !item.tmdbId}
-                onClick={() => onRequest(item)}
-              >
-                {reqSuccess ? <><Icons.check size={14}/> Requested</>
-                  : item.requested ? <><Icons.clock size={14}/> Pending in Overseerr</>
-                  : <><Icons.plus size={14}/> Request on Overseerr</>}
-              </button>
-              <button className="btn btn-ghost btn-lg" onClick={() => onWatched(item)}>
-                <Icons.check size={14}/> Mark watched
-              </button>
-              <button className="btn btn-ghost btn-lg" onClick={() => onDismiss(item)}>
-                <Icons.x size={14}/> Not interested
-              </button>
-            </div>
-            <div className="drawer-why">
-              <div className="drawer-why-label">Why you're seeing this</div>
-              <div className="drawer-why-reasons">
-                <div className="drawer-why-row">
-                  <div className="drawer-why-bullet"/>
-                  <div>Recommended by the SeerrV2 recommendation engine</div>
-                </div>
-                {item.breakdown && (
-                  <>
-                    <div className="drawer-why-row">
-                      <div className="drawer-why-bullet"/>
-                      <div>Content matching: {Math.round((item.breakdown.content?.score || 0) * 100)}%</div>
-                    </div>
-                    <div className="drawer-why-row">
-                      <div className="drawer-why-bullet"/>
-                      <div>Collaborative filtering: {Math.round((item.breakdown.collaborative?.score || 0) * 100)}%</div>
-                    </div>
-                    <div className="drawer-why-row">
-                      <div className="drawer-why-bullet"/>
-                      <div>Popularity boost: {Math.round((item.breakdown.popularity?.score || 0) * 100)}%</div>
-                    </div>
-                    <div className="drawer-why-row">
-                      <div className="drawer-why-bullet"/>
-                      <div>Overall match score: {Math.round((item.score || 0) * 100)}%</div>
-                    </div>
-                  </>
-                )}
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// ─── Tweaks panel ─────────────────────────────────────────────────
-function Tweaks({ open, onClose, state, setState }) {
-  if (!open) return null;
-  const update = (k, v) => setState(s => ({ ...s, [k]: v }));
-  return (
-    <div className="tweaks">
-      <div className="tweaks-head">
-        <div className="tweaks-title">Tweaks</div>
-        <button className="tweaks-close" onClick={onClose}><Icons.x size={14}/></button>
-      </div>
-
-      <div className="tweaks-row">
-        <div className="tweaks-row-label">Variant</div>
-        <div className="seg">
-          <button className={state.variant === 'refined' ? 'on' : ''} onClick={() => update('variant', 'refined')}>Refined</button>
-          <button className={state.variant === 'bold' ? 'on' : ''} onClick={() => update('variant', 'bold')}>Bold</button>
-        </div>
-      </div>
-
-      <div className="tweaks-row">
-        <div className="tweaks-row-label">Accent</div>
-        <div className="swatches">
-          {[['amber', 65], ['violet', 295], ['teal', 195], ['rose', 10], ['lime', 130]].map(([name, hue]) => (
-            <button
-              key={name}
-              className={`swatch ${state.accent === name ? 'on' : ''}`}
-              style={{ background: `oklch(0.72 0.17 ${hue})`, color: `oklch(0.72 0.17 ${hue})` }}
-              onClick={() => update('accent', name)}
-              title={name}
-            />
-          ))}
-        </div>
-      </div>
-
-      <div className="tweaks-row">
-        <div className="tweaks-row-label">Background</div>
-        <div className="seg">
-          <button className={state.bg === 'ink' ? 'on' : ''} onClick={() => update('bg', 'ink')}>Ink</button>
-          <button className={state.bg === 'grain' ? 'on' : ''} onClick={() => update('bg', 'grain')}>Grain</button>
-          <button className={state.bg === 'aurora' ? 'on' : ''} onClick={() => update('bg', 'aurora')}>Aurora</button>
-        </div>
-      </div>
-
-      <div className="tweaks-row">
-        <div className="tweaks-row-label">Hover</div>
-        <div className="seg">
-          <button className={state.hover === 'panel' ? 'on' : ''} onClick={() => update('hover', 'panel')}>Panel</button>
-          <button className={state.hover === 'overlay' ? 'on' : ''} onClick={() => update('hover', 'overlay')}>Overlay</button>
-          <button className={state.hover === 'lift' ? 'on' : ''} onClick={() => update('hover', 'lift')}>Lift</button>
-        </div>
-      </div>
-
-      <div className="tweaks-row">
-        <div className="tweaks-row-label">Shelves</div>
-        <div className="seg">
-          <button className={state.shelves ? 'on' : ''} onClick={() => update('shelves', true)}>On</button>
-          <button className={!state.shelves ? 'on' : ''} onClick={() => update('shelves', false)}>Off</button>
-        </div>
-      </div>
-
-      <div className="tweaks-row">
-        <div className="tweaks-row-label">Grid size</div>
-        <input
-          type="range" min="120" max="220" step="10"
-          value={state.cardMin}
-          onChange={e => update('cardMin', +e.target.value)}
-        />
-        <div className="tweaks-row-val">{state.cardMin}px</div>
-      </div>
-
-      <div className="tweaks-note">Changes persist to localStorage.</div>
-    </div>
-  );
-}
-
-// ─── App ─────────────────────────────────────────────────────────
-export default function App() {
-  const [tweaks, setTweaks] = useState(loadTweaks);
-  const [activeTab, setActiveTab] = useState(() => localStorage.getItem('seerrv2_tab') || 'for_you');
-  const [query, setQuery] = useState('');
-  const [density, setDensity] = useState('cozy');
-  const [detail, setDetail] = useState(null);
-  const [tweaksOpen, setTweaksOpen] = useState(false);
-  const [ratingPicker, setRatingPicker] = useState(null);
-  const [toast, setToast] = useState(null);
-
-  const [tabState, setTabState] = useState(() => {
-    const s = {};
-    TABS.forEach(t => { s[t] = { items: [], page: 0, hasMore: true, error: null, fetched: false }; });
-    return s;
-  });
-  const [loadingPage, setLoadingPage] = useState({});
-  const [requesting, setRequesting] = useState({});
-  const [requestSuccess, setRequestSuccess] = useState({});
-  const [watching, setWatching] = useState({});
-  const [dismissing, setDismissing] = useState({});
-
-  const scrollPositions = useRef({});
-  const sentinelRef = useRef(null);
-  const loadingRef = useRef({});
-  const gridRef = useRef(null);
-
-  // Persist tweaks
-  useEffect(() => {
-    localStorage.setItem('seerrv2_tweaks', JSON.stringify(tweaks));
-  }, [tweaks]);
-
-  useEffect(() => {
-    localStorage.setItem('seerrv2_tab', activeTab);
-  }, [activeTab]);
-
-  // Apply theme
-  useEffect(() => {
-    const hue = ACCENT_HUES[tweaks.accent] ?? 65;
-    document.documentElement.style.setProperty('--a-hue', hue);
-    document.documentElement.style.setProperty('--card-min', `${tweaks.cardMin}px`);
-    document.body.className = `bg-${tweaks.bg} hover-${tweaks.hover}`;
-  }, [tweaks]);
-
-  // Transform API item to UI item
-  const transformItem = (apiItem) => {
-    const score = apiItem.score !== undefined ? apiItem.score : 0;
-    return {
-      id: apiItem.item_id,
-      source: 'seerrv2',
-      title: apiItem.title,
-      overview: apiItem.overview,
-      posterUrl: apiItem.poster_path ? `https://image.tmdb.org/t/p/w500${apiItem.poster_path}` : null,
-      backdropUrl: null,
-      accentHue: hashHue(apiItem.title),
-      rating: apiItem.vote_average || 0,
-      year: apiItem.release_date ? apiItem.release_date.substring(0, 4) : null,
-      score: score,
-      tmdbId: apiItem.tmdb_id,
-      mediaType: apiItem.media_type,
-      genres: apiItem.genres || [],
-      requested: false,
-      breakdown: apiItem.breakdown,
-    };
-  };
-
-  // Fetch logic
-  const fetchPage = useCallback(async (tab, pageNum, depth = 0) => {
-    const loadKey = `${tab}_${pageNum}`;
-    if (loadingRef.current[loadKey]) return;
-    loadingRef.current = { ...loadingRef.current, [loadKey]: true };
-    setLoadingPage(prev => ({ ...prev, [loadKey]: true }));
-    try {
-      const res = await fetch(`${API_BASE}/${tab}?page=${pageNum}`);
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        throw new Error(err.error || `HTTP ${res.status}`);
-      }
-      const json = await res.json();
-      const newItems = (json.items || []).map(transformItem);
-      const dismissed = getDismissed(tab);
-      const hidden = getHidden(tab);
-      const visible = newItems.filter(i => !dismissed.has(i.id) && !hidden.has(i.id));
-      setTabState(prev => {
-        const current = prev[tab] || { items: [], page: 0, hasMore: true };
-        const seen = new Set(current.items.map(i => i.id));
-        const unique = visible.filter(i => {
-          if (seen.has(i.id)) return false;
-          seen.add(i.id);
-          return true;
-        });
-        const effectiveHasMore = json.hasMore && (unique.length > 0 || visible.length === 0);
-        return {
-          ...prev,
-          [tab]: { ...current, items: [...current.items, ...unique], page: pageNum, hasMore: effectiveHasMore, error: null, fetched: true },
-        };
-      });
-      if (visible.length === 0 && json.hasMore && depth < MAX_AUTO_CHAIN) {
-        await fetchPage(tab, pageNum + 1, depth + 1);
-      }
-    } catch (err) {
-      setTabState(prev => ({
-        ...prev,
-        [tab]: { ...(prev[tab] || { items: [], page: 0, hasMore: true }), error: err.message, fetched: true },
-      }));
-    } finally {
-      loadingRef.current = { ...loadingRef.current, [loadKey]: false };
-      setLoadingPage(prev => ({ ...prev, [loadKey]: false }));
-    }
-  }, []);
-
-  useEffect(() => {
-    TABS.forEach(tab => { if (!tabState[tab].fetched) fetchPage(tab, 1); });
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
-
-  // Auto-fetch all remaining pages for every tab (not just the active one)
-  useEffect(() => {
-    TABS.forEach(tab => {
-      const ts = tabState[tab];
-      if (!ts.fetched || !ts.hasMore) return;
-      const nextPage = (ts.page || 0) + 1;
-      if (!loadingRef.current[`${tab}_${nextPage}`]) fetchPage(tab, nextPage);
-    });
-  }, [tabState, fetchPage]);
-
-  useEffect(() => {
-    const sentinel = sentinelRef.current;
-    if (!sentinel) return;
-    const ts = tabState[activeTab];
-    if (!ts.hasMore) return;
-    const nextPage = (ts.page || 0) + 1;
-    const observer = new IntersectionObserver(
-      (entries) => { if (entries[0].isIntersecting) fetchPage(activeTab, nextPage); },
-      { rootMargin: '200px' }
-    );
-    observer.observe(sentinel);
-    return () => observer.disconnect();
-  }, [activeTab, tabState, fetchPage]);
-
-  // Scroll position memory
-  useLayoutEffect(() => {
-    window.scrollTo(0, scrollPositions.current[activeTab] || 0);
-  }, [activeTab]);
-
-  // Card panel flip logic
-  const ts = tabState[activeTab] || { items: [], page: 0, hasMore: true, error: null };
-  useEffect(() => {
-    const el = gridRef.current;
-    if (!el) return;
-    const update = () => {
-      el.querySelectorAll('.card').forEach(card => {
-        const rightSpace = window.innerWidth - card.getBoundingClientRect().right;
-        card.classList.toggle('flip-panel', rightSpace < 320);
-      });
-    };
-    update();
-    const ro = new ResizeObserver(update);
-    ro.observe(el);
-    window.addEventListener('resize', update);
-    return () => { ro.disconnect(); window.removeEventListener('resize', update); };
-  }, [ts.items, tweaks.cardMin]);
-
-  const showToast = (text) => {
-    setToast(text);
-    setTimeout(() => setToast(null), 2400);
-  };
-
-  // ── Tab switch ────────────────────────────────────────────────
-  const handleTabSwitch = (tab) => {
-    scrollPositions.current[activeTab] = window.scrollY;
-    setActiveTab(tab);
-    setQuery('');
-  };
-
-  // ── Refresh ───────────────────────────────────────────────────
-  const handleRefresh = async () => {
-    loadingRef.current = {};
-    setTabState(() => {
-      const fresh = {};
-      TABS.forEach(t => { fresh[t] = { items: [], page: 0, hasMore: true, error: null, fetched: false }; });
-      return fresh;
-    });
-    // Trigger regeneration
-    try {
-      await fetch(`${API_BASE}/generate`, { method: 'POST' });
-    } catch (e) {
-      console.warn('Regeneration trigger failed:', e);
-    }
-    TABS.forEach(tab => fetchPage(tab, 1));
-    showToast('Recommendations refreshed');
-  };
-
-  // ── Request ───────────────────────────────────────────────────
-  const handleRequest = async (item) => {
-    const key = item.id;
-    const sourceTab = activeTab;
-    if (requesting[key] || requestSuccess[key] || !item.tmdbId) return;
-    setRequesting(prev => ({ ...prev, [key]: true }));
-    try {
-      const res = await fetch('/api/request', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ mediaType: item.mediaType === 'anime' ? 'tv' : item.mediaType, tmdbId: item.tmdbId }),
-      });
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        throw new Error(err.error || `HTTP ${res.status}`);
-      }
-      setRequestSuccess(prev => ({ ...prev, [key]: true }));
-      setTabState(prev => ({
-        ...prev,
-        [sourceTab]: {
-          ...prev[sourceTab],
-          items: prev[sourceTab].items.map(i => i.id === key ? { ...i, requested: true } : i),
-        },
-      }));
-      showToast(`Requested "${item.title}" on Overseerr`);
-    } catch (err) {
-      showToast(`Request failed: ${err.message}`);
-    } finally {
-      setRequesting(prev => ({ ...prev, [key]: false }));
-    }
-  };
-
-  // ── Watched ───────────────────────────────────────────────────
-  const handleWatched = (item) => {
-    if (watching[item.id]) return;
-    setRatingPicker({ item, action: 'watched' });
-  };
-
-  const execWatched = async (item, rating) => {
-    const key = item.id;
-    const sourceTab = activeTab;
-    setWatching(prev => ({ ...prev, [key]: true }));
-    try {
-      const payload = { source: item.source, mediaType: item.mediaType };
-      if (item.source === 'seerrv2') payload.tmdbId = item.tmdbId;
-      if (rating) payload.rating = rating;
-      const res = await fetch('/api/watched', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      });
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        throw new Error(err.error || `HTTP ${res.status}`);
-      }
-      addDismissed(sourceTab, key);
-      setTabState(prev => ({
-        ...prev,
-        [sourceTab]: { ...prev[sourceTab], items: prev[sourceTab].items.filter(i => i.id !== key) },
-      }));
-      setDetail(d => d?.id === key ? null : d);
-      showToast(rating ? `Rated "${item.title}" ${rating}/10` : `Marked "${item.title}" watched`);
-    } catch (err) {
-      showToast(`Watch failed: ${err.message}`);
-    } finally {
-      setWatching(prev => ({ ...prev, [key]: false }));
-    }
-  };
-
-  // ── Dismiss ───────────────────────────────────────────────────
-  const handleDismiss = (item) => {
-    if (dismissing[item.id]) return;
-    setRatingPicker({ item, action: 'dismiss' });
-  };
-
-  const execDismiss = async (item) => {
-    const key = item.id;
-    const sourceTab = activeTab;
-    setDismissing(prev => ({ ...prev, [key]: true }));
-    try {
-      await fetch('/api/dismiss', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ source: 'seerrv2', mediaType: item.mediaType, tmdbId: item.tmdbId }),
-      });
-      addHidden(sourceTab, key);
-      setTabState(prev => ({
-        ...prev,
-        [sourceTab]: { ...prev[sourceTab], items: prev[sourceTab].items.filter(i => i.id !== key) },
-      }));
-      setDetail(d => d?.id === key ? null : d);
-      showToast(`Dismissed "${item.title}"`);
-    } catch (err) {
-      showToast(`Dismiss failed: ${err.message}`);
-    } finally {
-      setDismissing(prev => ({ ...prev, [key]: false }));
-    }
-  };
-
-  // ── Rating confirm ─────────────────────────────────────────────
-  const handleRatingConfirm = (rating) => {
-    if (!ratingPicker) return;
-    const { item, action } = ratingPicker;
-    setRatingPicker(null);
-    if (action === 'watched') execWatched(item, rating);
-    else execDismiss(item);
-  };
-
-  // ── Derived state ──────────────────────────────────────────────
-  const counts = useMemo(() => ({
-    for_you: tabState.for_you.items.length,
-    movies: tabState.movies.items.length,
-    tv: tabState.tv.items.length,
-    anime: tabState.anime.items.length,
-    trending: tabState.trending.items.length,
-    hidden_gems: tabState.hidden_gems.items.length,
-  }), [tabState]);
-
-  const filteredItems = useMemo(() => {
-    const list = ts.items;
-    const q = query.trim().toLowerCase();
-    if (!q) return list;
-    return list.filter(i =>
-      i.title.toLowerCase().includes(q) ||
-      i.genres?.some(g => g.toLowerCase().includes(q))
-    );
-  }, [ts.items, query]);
-
-  const isLoadingFirst = loadingPage[`${activeTab}_1`] && ts.items.length === 0;
-  const isLoadingMore = loadingPage[`${activeTab}_${ts.page + 1}`];
-
-  const isBold = tweaks.variant === 'bold';
-  const heroItem = isBold && filteredItems.length > 0 ? filteredItems[0] : null;
-  const gridItems = isBold && tweaks.shelves
-    ? filteredItems.slice(Math.min(filteredItems.length, 5))
-    : (isBold ? filteredItems.slice(1) : filteredItems);
-
-  const cardProps = {
-    onRequest: handleRequest,
-    onWatched: handleWatched,
-    onDismiss: handleDismiss,
-    onOpen: setDetail,
-    requesting,
-    watching,
-    dismissing,
-    reqSuccess: requestSuccess,
-  };
-
-  // ── Render ─────────────────────────────────────────────────────
-  return (
-    <div className="app">
-      <Sidebar
-        activeTab={activeTab}
-        onTab={handleTabSwitch}
-        onRefresh={handleRefresh}
-        counts={counts}
-        tweaks={tweaks}
-      />
-
-      <main className="main">
-        <TopBar
-          activeTab={activeTab}
-          query={query}
-          onQuery={setQuery}
-          density={density}
-          onDensity={setDensity}
-          onOpenTweaks={() => setTweaksOpen(o => !o)}
-        />
-
-        {isBold && heroItem && (
-          <Hero
-            item={heroItem}
-            onRequest={handleRequest}
-            onWatched={handleWatched}
-            requesting={requesting[heroItem.id]}
-            reqSuccess={requestSuccess[heroItem.id]}
-          />
-        )}
-
-        <div className="sec-head">
-          <div className="sec-title">{isBold ? 'Everything else' : 'All recommendations'}</div>
-          <div className="sec-sub">
-            <span className="sec-count">{gridItems.length}</span> · page {ts.page || 1}/∞
-          </div>
-        </div>
-
-        {isLoadingFirst && (
-          <div className="grid">
-            {Array.from({ length: 20 }).map((_, i) => <div key={i} className="skel"/>)}
-          </div>
-        )}
-
-        {ts.error && !isLoadingFirst && (
-          <div className="status-msg error">Failed to load: {ts.error}</div>
-        )}
-
-        {!isLoadingFirst && !ts.error && ts.fetched && filteredItems.length === 0 && (
-          <div className="empty">
-            {query ? `No results match "${query}"` : 'No recommendations found.'}
-          </div>
-        )}
-
-        {gridItems.length > 0 && (
-          <div className="grid" ref={gridRef} style={{ '--card-min': { compact: '130px', cozy: '170px', comfy: '210px' }[density] }}>
-            {gridItems.map(item => (
-              <Card
-                key={item.id}
-                item={item}
-                onRequest={cardProps.onRequest}
-                onWatched={cardProps.onWatched}
-                onDismiss={cardProps.onDismiss}
-                onOpen={cardProps.onOpen}
-                requesting={requesting[item.id]}
-                watching={watching[item.id]}
-                dismissing={dismissing[item.id]}
-                reqSuccess={requestSuccess[item.id]}
-              />
-            ))}
-          </div>
-        )}
-
-        <div ref={sentinelRef} className="sentinel">
-          {isLoadingMore && (
-            <div className="status-msg"><div className="loading-spinner"/></div>
-          )}
-          {!ts.hasMore && ts.items.length > 0 && !isLoadingMore && (
-            <div className="end-msg">— End of results —</div>
-          )}
-        </div>
-      </main>
-
-      {/* Rating modal */}
-      {ratingPicker && (
-        <RatingPicker
-          item={ratingPicker.item}
-          action={ratingPicker.action}
-          onConfirm={handleRatingConfirm}
-          onSkip={() => handleRatingConfirm(null)}
-          onCancel={() => setRatingPicker(null)}
-        />
-      )}
-
-      {/* Detail drawer */}
-      {detail && (
-        <DetailDrawer
-          item={detail}
-          onClose={() => setDetail(null)}
-          onRequest={handleRequest}
-          onWatched={handleWatched}
-          onDismiss={handleDismiss}
-          requesting={requesting[detail.id]}
-          reqSuccess={requestSuccess[detail.id]}
-        />
-      )}
-
-      {/* Tweaks panel */}
-      <Tweaks open={tweaksOpen} onClose={() => setTweaksOpen(false)} state={tweaks} setState={setTweaks}/>
-
-      {/* Toast */}
-      {toast && <div className="toast">{toast}</div>}
-    </div>
-  );
-}
+     1|import React, { useState, useEffect, useLayoutEffect, useCallback, useRef, useMemo } from 'react';
+     2|
+     3|// ─── Constants ───────────────────────────────────────────────────
+     4|const TABS = ['for_you', 'movies', 'tv', 'anime', 'trending', 'hidden_gems'];
+     5|const MAX_AUTO_CHAIN = 3;
+     6|const DISMISSED_TTL = 24 * 60 * 60 * 1000;
+     7|
+     8|const ACCENT_HUES = { amber: 65, violet: 295, teal: 195, rose: 10, lime: 130 };
+     9|const DEFAULTS = { variant: 'bold', accent: 'amber', bg: 'ink', hover: 'panel', shelves: true, cardMin: 170 };
+    10|
+    11|const API_BASE = '/api/v2/recommendations/ganyu';
+    12|
+    13|// ─── Persistence utils ───────────────────────────────────────────
+    14|function loadTweaks() {
+    15|  try {
+    16|    const raw = localStorage.getItem('mediocre_tweaks');
+    17|    return { ...DEFAULTS, ...(raw ? JSON.parse(raw) : {}) };
+    18|  } catch { return { ...DEFAULTS }; }
+    19|}
+    20|
+    21|function getDismissed(tab) {
+    22|  try {
+    23|    const raw = localStorage.getItem(`mediocre_dismissed_${tab}`);
+    24|    if (!raw) return new Set();
+    25|    const parsed = JSON.parse(raw);
+    26|    const now = Date.now();
+    27|    return new Set(parsed.filter(e => now - e.t < DISMISSED_TTL).map(e => e.id));
+    28|  } catch { return new Set(); }
+    29|}
+    30|
+    31|function addDismissed(tab, id) {
+    32|  try {
+    33|    const raw = localStorage.getItem(`mediocre_dismissed_${tab}`);
+    34|    const existing = raw ? JSON.parse(raw) : [];
+    35|    existing.push({ id, t: Date.now() });
+    36|    localStorage.setItem(`mediocre_dismissed_${tab}`, JSON.stringify(existing));
+    37|  } catch {}
+    38|}
+    39|
+    40|function getHidden(tab) {
+    41|  try {
+    42|    const raw = localStorage.getItem(`mediocre_hidden_${tab}`);
+    43|    return raw ? new Set(JSON.parse(raw)) : new Set();
+    44|  } catch { return new Set(); }
+    45|}
+    46|
+    47|function addHidden(tab, id) {
+    48|  try {
+    49|    const hidden = getHidden(tab);
+    50|    hidden.add(id);
+    51|    localStorage.setItem(`mediocre_hidden_${tab}`, JSON.stringify([...hidden]));
+    52|  } catch {}
+    53|}
+    54|
+    55|function getItemUrl(item) {
+    56|  if (item.tmdbId)
+    57|    return `https://www.themoviedb.org/${item.mediaType === 'movie' ? 'movie' : 'tv'}/${item.tmdbId}`;
+    58|  return null;
+    59|}
+    60|
+    61|function hashHue(str) {
+    62|  let h = 0;
+    63|  for (let i = 0; i < str.length; i++) h = (h * 31 + str.charCodeAt(i)) % 360;
+    64|  return h;
+    65|}
+    66|
+    67|// ─── Icons ───────────────────────────────────────────────────────
+    68|const Icon = ({ d, size = 16, fill = false, stroke = 1.5, ...rest }) => (
+    69|  <svg width={size} height={size} viewBox="0 0 24 24"
+    70|    fill={fill ? 'currentColor' : 'none'}
+    71|    stroke="currentColor" strokeWidth={stroke}
+    72|    strokeLinecap="round" strokeLinejoin="round" {...rest}>
+    73|    <path d={d} />
+    74|  </svg>
+    75|);
+    76|
+    77|const Icons = {
+    78|  film:     (p) => <Icon d="M4 4h16v16H4z M4 9h16 M4 15h16 M8 4v16 M16 4v16" {...p} />,
+    79|  tv:       (p) => <Icon d="M3 6h18v12H3z M8 21h8 M12 18v3" {...p} />,
+    80|  sparkle:  (p) => <Icon d="M12 3l1.5 5.5L19 10l-5.5 1.5L12 17l-1.5-5.5L5 10l5.5-1.5z M19 3v3 M17.5 4.5h3" {...p} />,
+    81|  refresh:  (p) => <Icon d="M3 12a9 9 0 0 1 15.3-6.3L21 8 M21 3v5h-5 M21 12a9 9 0 0 1-15.3 6.3L3 16 M3 21v-5h5" {...p} />,
+    82|  search:   (p) => <Icon d="M11 11m-7 0a7 7 0 1 0 14 0a7 7 0 1 0-14 0 M21 21l-4.3-4.3" {...p} />,
+    83|  plus:     (p) => <Icon d="M12 5v14 M5 12h14" {...p} />,
+    84|  check:    (p) => <Icon d="M5 12l5 5L20 7" {...p} />,
+    85|  clock:    (p) => <Icon d="M12 2a10 10 0 1 0 0 20a10 10 0 0 0 0-20 M12 7v5l3 3" {...p} />,
+    86|  x:        (p) => <Icon d="M6 6l12 12 M6 18L18 6" {...p} />,
+    87|  link:     (p) => <Icon d="M10 14a5 5 0 0 0 7 0l3-3a5 5 0 0 0-7-7l-1 1 M14 10a5 5 0 0 0-7 0l-3 3a5 5 0 0 0 7 7l1-1" {...p} />,
+    88|  star:     (p) => <Icon d="M12 2l3 7 7.5.6-5.7 5 1.7 7.4L12 18l-6.5 4 1.7-7.4L1.5 9.6 9 9z" {...p} fill />,
+    89|  chev:     (p) => <Icon d="M9 6l6 6-6 6" {...p} />,
+    90|  settings: (p) => <Icon d="M12 15a3 3 0 1 0 0-6a3 3 0 0 0 0 6z M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" {...p} />,
+    91|};
+    92|
+    93|// ─── Sidebar ─────────────────────────────────────────────────────
+    94|function Sidebar({ activeTab, onTab, onRefresh, counts, tweaks }) {
+    95|  return (
+    96|    <aside className="side">
+    97|      <div className="side-brand">
+    98|        <div className="side-mark">
+    99|          <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
+   100|            <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="1.5"/>
+   101|            <circle cx="12" cy="12" r="4" fill="currentColor"/>
+   102|            <circle cx="18" cy="7" r="1.5" fill="currentColor"/>
+   103|          </svg>
+   104|        </div>
+   105|        <div className="side-wordmark">
+   106|          <div className="side-word">seerr</div>
+   107|          <div className="side-sub">v2 · recommendations</div>
+   108|        </div>
+   109|      </div>
+   110|
+   111|      <div className="side-group">
+   112|        <div className="side-label">Discover</div>
+   113|        <button className={`side-item ${activeTab === 'for_you' ? 'on' : ''}`} onClick={() => onTab('for_you')}>
+   114|          <Icons.sparkle size={16}/> <span>For You</span>
+   115|          <em className="side-count">{counts.for_you}</em>
+   116|        </button>
+   117|        <button className={`side-item ${activeTab === 'movies' ? 'on' : ''}`} onClick={() => onTab('movies')}>
+   118|          <Icons.film size={16}/> <span>Movies</span>
+   119|          <em className="side-count">{counts.movies}</em>
+   120|        </button>
+   121|        <button className={`side-item ${activeTab === 'tv' ? 'on' : ''}`} onClick={() => onTab('tv')}>
+   122|          <Icons.tv size={16}/> <span>TV Shows</span>
+   123|          <em className="side-count">{counts.tv}</em>
+   124|        </button>
+   125|        <button className={`side-item ${activeTab === 'anime' ? 'on' : ''}`} onClick={() => onTab('anime')}>
+   126|          <Icons.sparkle size={16}/> <span>Anime</span>
+   127|          <em className="side-count">{counts.anime}</em>
+   128|        </button>
+   129|        <button className={`side-item ${activeTab === 'trending' ? 'on' : ''}`} onClick={() => onTab('trending')}>
+   130|          <Icons.sparkle size={16}/> <span>Trending</span>
+   131|          <em className="side-count">{counts.trending}</em>
+   132|        </button>
+   133|        <button className={`side-item ${activeTab === 'hidden_gems' ? 'on' : ''}`} onClick={() => onTab('hidden_gems')}>
+   134|          <Icons.sparkle size={16}/> <span>Hidden Gems</span>
+   135|          <em className="side-count">{counts.hidden_gems}</em>
+   136|        </button>
+   137|      </div>
+   138|
+   139|      <div className="side-spacer"/>
+   140|
+   141|      <div className="side-foot">
+   142|        <button className="side-foot-btn" onClick={onRefresh} title="Refresh recommendations">
+   143|          <Icons.refresh size={14}/> <span>Refresh</span>
+   144|        </button>
+   145|        <div className="side-foot-user">
+   146|          <div className="side-foot-avatar">G</div>
+   147|          <div>
+   148|            <div className="side-foot-name">Ganyu</div>
+   149|            <div className="side-foot-sub">{tweaks.variant === 'bold' ? 'Bold' : 'Refined'} theme</div>
+   150|          </div>
+   151|        </div>
+   152|      </div>
+   153|    </aside>
+   154|  );
+   155|}
+   156|
+   157|// ─── TopBar ──────────────────────────────────────────────────────
+   158|function TopBar({ activeTab, query, onQuery, density, onDensity, onOpenTweaks }) {
+   159|  const titles = { for_you: 'For You', movies: 'Movies', tv: 'TV Shows', anime: 'Anime', trending: 'Trending', hidden_gems: 'Hidden Gems' };
+   160|  const subs = {
+   161|    for_you: 'Personalized picks from the Mediocre recommendation engine',
+   162|    movies: 'Movie recommendations tuned to your taste profile',
+   163|    tv: 'TV show recommendations based on your viewing history',
+   164|    anime: 'Anime recommendations from the Mediocre engine',
+   165|    trending: 'Currently popular titles you might have missed',
+   166|    hidden_gems: 'Underrated titles that deserve your attention',
+   167|  };
+   168|  return (
+   169|    <header className="top">
+   170|      <div className="top-head">
+   171|        <div className="top-crumb">Discover <span className="top-sep">/</span> <strong>{titles[activeTab]}</strong></div>
+   172|        <h1 className="top-title">{titles[activeTab]}</h1>
+   173|        <p className="top-sub">{subs[activeTab]}</p>
+   174|      </div>
+   175|      <div className="top-actions">
+   176|        <div className="top-search">
+   177|          <Icons.search size={14}/>
+   178|          <input
+   179|            value={query}
+   180|            onChange={e => onQuery(e.target.value)}
+   181|            placeholder="Filter this list…"
+   182|          />
+   183|        </div>
+   184|        <div className="top-toggle">
+   185|          <button className={density === 'compact' ? 'on' : ''} onClick={() => onDensity('compact')} title="Compact">
+   186|            <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+   187|              <rect x="3" y="3" width="8" height="8" rx="1"/>
+   188|              <rect x="13" y="3" width="8" height="8" rx="1"/>
+   189|              <rect x="3" y="13" width="8" height="8" rx="1"/>
+   190|              <rect x="13" y="13" width="8" height="8" rx="1"/>
+   191|            </svg>
+   192|          </button>
+   193|          <button className={density === 'cozy' ? 'on' : ''} onClick={() => onDensity('cozy')} title="Cozy">
+   194|            <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+   195|              <rect x="3" y="3" width="6" height="18" rx="1"/>
+   196|              <rect x="10" y="3" width="6" height="18" rx="1"/>
+   197|              <rect x="17" y="3" width="4" height="18" rx="1"/>
+   198|            </svg>
+   199|          </button>
+   200|          <button className={density === 'comfy' ? 'on' : ''} onClick={() => onDensity('comfy')} title="Comfortable">
+   201|            <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+   202|              <rect x="3" y="3" width="8" height="18" rx="1"/>
+   203|              <rect x="13" y="3" width="8" height="18" rx="1"/>
+   204|            </svg>
+   205|          </button>
+   206|        </div>
+   207|        <button className="top-icon-btn" title="Tweaks" onClick={onOpenTweaks}><Icons.settings size={16}/></button>
+   208|      </div>
+   209|    </header>
+   210|  );
+   211|}
+   212|
+   213|// ─── Hero (bold variant) ─────────────────────────────────────────
+   214|function Hero({ item, onRequest, onWatched, requesting, reqSuccess }) {
+   215|  if (!item) return null;
+   216|  return (
+   217|    <div className="hero">
+   218|      {item.backdropUrl
+   219|        ? <div className="hero-bg" style={{ backgroundImage: `url("${item.backdropUrl}")` }}/>
+   220|        : <div className="hero-bg" style={{ background: `oklch(0.28 0.12 ${hashHue(item.title)})` }}/>
+   221|      }
+   222|      <div className="hero-scrim"/>
+   223|      <div className="hero-body">
+   224|        <div className="hero-eyebrow">
+   225|          <span className="hero-chip">Top pick for you</span>
+   226|          <span className="hero-dot"/>
+   227|          <span className="hero-match">via {item.source}</span>
+   228|        </div>
+   229|        <h2 className="hero-title">{item.title}</h2>
+   230|        <div className="hero-meta">
+   231|          <span>{item.year}</span>
+   232|          {item.rating > 0 && <>
+   233|            <span className="hero-dot"/>
+   234|            <span className="hero-rating"><Icons.star size={12}/> {item.rating}</span>
+   235|          </>}
+   236|          {item.score !== undefined && item.score !== null && (
+   237|            <>
+   238|              <span className="hero-dot"/>
+   239|              <span className="hero-match">{Math.round(item.score * 100)}% match</span>
+   240|            </>
+   241|          )}
+   242|          {item.genres?.length > 0 && <>
+   243|            <span className="hero-dot"/>
+   244|            <span>{item.genres.slice(0, 3).join(' · ')}</span>
+   245|          </>}
+   246|        </div>
+   247|        {item.overview && <p className="hero-overview">{item.overview}</p>}
+   248|        <div className="hero-actions">
+   249|          <button
+   250|            className="btn btn-primary btn-lg"
+   251|            disabled={requesting || reqSuccess || item.requested}
+   252|            onClick={() => onRequest(item)}
+   253|          >
+   254|            {reqSuccess ? <><Icons.check size={14}/> Requested</>
+   255|              : item.requested ? <><Icons.clock size={14}/> Pending</>
+   256|              : <><Icons.plus size={14}/> Request</>}
+   257|          </button>
+   258|          <button className="btn btn-ghost btn-lg" onClick={() => onWatched(item)}>
+   259|            <Icons.check size={14}/> Mark watched
+   260|          </button>
+   261|        </div>
+   262|      </div>
+   263|    </div>
+   264|  );
+   265|}
+   266|
+   267|// ─── Card ────────────────────────────────────────────────────────
+   268|function Card({ item, onRequest, onWatched, onDismiss, onOpen, requesting, watching, dismissing, reqSuccess }) {
+   269|  const accentHue = item.accentHue ?? hashHue(item.title);
+   270|  const accent = `oklch(0.62 0.18 ${accentHue})`;
+   271|  return (
+   272|    <div
+   273|      className="card"
+   274|      style={{ '--item-accent': accent }}
+   275|      onClick={() => onOpen(item)}
+   276|    >
+   277|      <div className="card-poster">
+   278|        {item.posterUrl
+   279|          ? <img src={item.posterUrl} alt={item.title} loading="lazy"/>
+   280|          : <div className="card-poster-empty">?</div>
+   281|        }
+   282|        <div className="card-sheen"/>
+   283|      </div>
+   284|
+   285|      <div className="card-foot">
+   286|        <div className="card-foot-title">{item.title}</div>
+   287|        <div className="card-foot-meta">
+   288|          <span>{item.year}</span>
+   289|          {item.rating > 0 && <>
+   290|            <span className="card-foot-sep">·</span>
+   291|            <span className="card-foot-rating"><Icons.star size={10}/> {item.rating}</span>
+   292|          </>}
+   293|          {item.score !== undefined && item.score !== null && (
+   294|            <>
+   295|              <span className="card-foot-sep">·</span>
+   296|              <span className="card-foot-rating">{Math.round(item.score * 100)}%</span>
+   297|            </>
+   298|          )}
+   299|        </div>
+   300|      </div>
+   301|
+   302|      <div className={`card-source s-${item.source}`}>
+   303|        {item.source === 'mediocre' ? 'S' : '?'}
+   304|      </div>
+   305|
+   306|      {item.requested && !reqSuccess && (
+   307|        <div className="card-pill pill-pending">
+   308|          <Icons.clock size={10}/> Pending
+   309|        </div>
+   310|      )}
+   311|      {reqSuccess && (
+   312|        <div className="card-pill pill-done">
+   313|          <Icons.check size={10}/> Requested
+   314|        </div>
+   315|      )}
+   316|
+   317|      <div className="card-panel">
+   318|        <div className="card-panel-inner">
+   319|          <div className="card-panel-head">
+   320|            <div className="card-panel-title">{item.title}</div>
+   321|            <div className="card-panel-meta">
+   322|              <span>{item.year}</span>
+   323|              {item.runtime && <><span>·</span><span>{item.runtime}m</span></>}
+   324|              {item.seasons && <><span>·</span><span>{item.seasons} season{item.seasons > 1 ? 's' : ''}</span></>}
+   325|              {item.episodes && <><span>·</span><span>{item.episodes} ep</span></>}
+   326|              {item.rating > 0 && <><span>·</span><span className="card-panel-rating"><Icons.star size={10}/> {item.rating}</span></>}
+   327|              {item.score !== undefined && item.score !== null && (
+   328|                <>
+   329|                  <span>·</span>
+   330|                  <span className="card-panel-rating">{Math.round(item.score * 100)}% match</span>
+   331|                </>
+   332|              )}
+   333|            </div>
+   334|          </div>
+   335|          {item.genres?.length > 0 && (
+   336|            <div className="card-panel-genres">
+   337|              {item.genres.slice(0, 3).map(g => <span key={g} className="card-panel-genre">{g}</span>)}
+   338|            </div>
+   339|          )}
+   340|          {item.overview && <p className="card-panel-overview">{item.overview}</p>}
+   341|          <div className="card-panel-source">
+   342|            <span className={`card-panel-src-badge s-${item.source}`}>{item.source}</span>
+   343|            <span>via Mediocre recommendation engine</span>
+   344|          </div>
+   345|          <div className="card-panel-actions">
+   346|            <button
+   347|              className="btn btn-primary btn-sm"
+   348|              disabled={requesting || reqSuccess || item.requested || !item.tmdbId}
+   349|              onClick={e => { e.stopPropagation(); onRequest(item); }}
+   350|            >
+   351|              {requesting ? '…'
+   352|                : reqSuccess ? <><Icons.check size={13}/> Requested</>
+   353|                : item.requested ? <><Icons.clock size={13}/> Pending</>
+   354|                : <><Icons.plus size={13}/> Request</>}
+   355|            </button>
+   356|            <button
+   357|              className="btn btn-ghost btn-sm"
+   358|              disabled={watching}
+   359|              onClick={e => { e.stopPropagation(); onWatched(item); }}
+   360|              title="Mark watched"
+   361|            >
+   362|              <Icons.check size={13}/>
+   363|            </button>
+   364|            <button
+   365|              className="btn btn-ghost btn-sm"
+   366|              disabled={dismissing}
+   367|              onClick={e => { e.stopPropagation(); onDismiss(item); }}
+   368|              title="Not interested"
+   369|            >
+   370|              <Icons.x size={13}/>
+   371|            </button>
+   372|          </div>
+   373|        </div>
+   374|      </div>
+   375|    </div>
+   376|  );
+   377|}
+   378|
+   379|// ─── Shelf (bold variant) ─────────────────────────────────────────
+   380|function Shelf({ title, subtitle, items, cardProps }) {
+   381|  const ref = useRef(null);
+   382|  const scroll = (dir) => {
+   383|    if (!ref.current) return;
+   384|    ref.current.scrollBy({ left: dir * ref.current.clientWidth * 0.8, behavior: 'smooth' });
+   385|  };
+   386|  return (
+   387|    <section className="shelf">
+   388|      <div className="shelf-head">
+   389|        <div>
+   390|          <h3 className="shelf-title">{title}</h3>
+   391|          <p className="shelf-sub">{subtitle}</p>
+   392|        </div>
+   393|        <div className="shelf-nav">
+   394|          <button onClick={() => scroll(-1)}><Icons.chev size={14} style={{ transform: 'rotate(180deg)' }}/></button>
+   395|          <button onClick={() => scroll(1)}><Icons.chev size={14}/></button>
+   396|        </div>
+   397|      </div>
+   398|      <div className="shelf-track" ref={ref}>
+   399|        {items.map(item => (
+   400|          <div className="shelf-cell" key={item.id}>
+   401|            <Card
+   402|              item={item}
+   403|              onRequest={cardProps.onRequest}
+   404|              onWatched={cardProps.onWatched}
+   405|              onDismiss={cardProps.onDismiss}
+   406|              onOpen={cardProps.onOpen}
+   407|              requesting={cardProps.requesting?.[item.id]}
+   408|              watching={cardProps.watching?.[item.id]}
+   409|              dismissing={cardProps.dismissing?.[item.id]}
+   410|              reqSuccess={cardProps.reqSuccess?.[item.id]}
+   411|            />
+   412|          </div>
+   413|        ))}
+   414|      </div>
+   415|    </section>
+   416|  );
+   417|}
+   418|
+   419|// ─── RatingPicker (5-star modal) ─────────────────────────────────
+   420|function RatingPicker({ item, action, onConfirm, onSkip, onCancel }) {
+   421|  const [hover, setHover] = useState(0);
+   422|  const [committed, setCommitted] = useState(0);
+   423|  const display = hover || committed;
+   424|  const stars = [1, 2, 3, 4, 5];
+   425|
+   426|  const handleClick = (val) => {
+   427|    setCommitted(val);
+   428|    setTimeout(() => onConfirm(val * 2), 150); // convert to 1–10 scale
+   429|  };
+   430|
+   431|  return (
+   432|    <div className="modal-backdrop" onClick={onCancel}>
+   433|      <div className="modal" onClick={e => e.stopPropagation()}>
+   434|        <div className="modal-eyebrow">{action === 'watched' ? 'You watched' : 'Not interested in'}</div>
+   435|        <div className="modal-title">{item.title}</div>
+   436|        <div className="modal-sub">
+   437|          {action === 'watched'
+   438|            ? 'Rate it so we can tune your recommendations'
+   439|            : 'How bad was it? (optional)'}
+   440|        </div>
+   441|        <div className="rating" onMouseLeave={() => setHover(0)}>
+   442|          {stars.map(i => {
+   443|            const leftVal = i - 0.5;
+   444|            const rightVal = i;
+   445|            const leftLit = display >= leftVal;
+   446|            const rightLit = display >= rightVal;
+   447|            return (
+   448|              <div key={i} className="rating-star-wrap">
+   449|                <div className="rating-halves">
+   450|                  <button
+   451|                    className="rating-half"
+   452|                    onMouseEnter={() => setHover(leftVal)}
+   453|                    onClick={() => handleClick(leftVal)}
+   454|                  />
+   455|                  <button
+   456|                    className="rating-half"
+   457|                    onMouseEnter={() => setHover(rightVal)}
+   458|                    onClick={() => handleClick(rightVal)}
+   459|                  />
+   460|                </div>
+   461|                <svg className="rating-glyph" viewBox="0 0 24 24" width="40" height="40" aria-hidden>
+   462|                  <defs>
+   463|                    <clipPath id={`clp-${i}`}><rect x="0" y="0" width="12" height="24"/></clipPath>
+   464|                  </defs>
+   465|                  <path className="rating-bg" d="M12 2l3 7 7.5.6-5.7 5 1.7 7.4L12 18l-6.5 4 1.7-7.4L1.5 9.6 9 9z"/>
+   466|                  {leftLit && <path className="rating-fg" clipPath={`url(#clp-${i})`} d="M12 2l3 7 7.5.6-5.7 5 1.7 7.4L12 18l-6.5 4 1.7-7.4L1.5 9.6 9 9z"/>}
+   467|                  {rightLit && <path className="rating-fg" d="M12 2l3 7 7.5.6-5.7 5 1.7 7.4L12 18l-6.5 4 1.7-7.4L1.5 9.6 9 9z"/>}
+   468|                </svg>
+   469|              </div>
+   470|            );
+   471|          })}
+   472|        </div>
+   473|        <div className="rating-value">{display ? `${display.toFixed(1)} / 5` : 'Hover to rate'}</div>
+   474|        <div className="modal-actions">
+   475|          <button className="btn btn-ghost" onClick={onSkip}>Skip rating</button>
+   476|          <button className="btn btn-primary" onClick={onCancel}>Close</button>
+   477|        </div>
+   478|      </div>
+   479|    </div>
+   480|  );
+   481|}
+   482|
+   483|// ─── DetailDrawer ────────────────────────────────────────────────
+   484|function DetailDrawer({ item, onClose, onRequest, onWatched, onDismiss, requesting, reqSuccess }) {
+   485|  useEffect(() => {
+   486|    const onEsc = (e) => e.key === 'Escape' && onClose();
+   487|    document.addEventListener('keydown', onEsc);
+   488|    return () => document.removeEventListener('keydown', onEsc);
+   489|  }, [onClose]);
+   490|
+   491|  if (!item) return null;
+   492|  const extUrl = getItemUrl(item);
+   493|
+   494|  return (
+   495|    <div className="drawer-backdrop" onClick={onClose}>
+   496|      <div className="drawer" onClick={e => e.stopPropagation()}>
+   497|        {item.backdropUrl
+   498|          ? <div className="drawer-bg" style={{ backgroundImage: `url("${item.backdropUrl}")` }}/>
+   499|          : <div className="drawer-bg" style={{ background: `oklch(0.25 0.1 ${hashHue(item.title)})` }}/>
+   500|        }
+   501|

@@ -4,7 +4,7 @@
 
 [![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
 
-Mediocre is a fast, self-hosted recommendation system that learns what you like from your Plex watch history and suggests what to watch next. Cross-domain (movies, TV, anime), multi-user, and served from SQLite in **under 50ms**.
+Mediocre is a fast, self-hosted recommendation system that learns what you like from your watch history and suggests what to watch next. Cross-domain (movies, TV, anime), served from SQLite in **under 50ms**.
 
 ## Why "Mediocre"?
 
@@ -12,17 +12,21 @@ Because every recommendation app promises to change your life. This one just giv
 
 ## What It Actually Does
 
-- **Learns your taste** from Plex watch history + explicit ratings (1–10)
+- **Learns your taste** from watch history + explicit ratings (1–10)
 - **3-Layer Ensemble Scoring Engine:**
   - **Content Filtering (50%)** — Genre & keyword matching weighted by your ratings
-  - **Collaborative Filtering (30%)** — Jaccard similarity between users' watch histories
+  - **Collaborative Filtering (30%)** — User similarity from watch history overlap
   - **Popularity/Recency (20%)** — TMDB popularity × release year decay
 - **Keyword-aware recommendations** — Syncs TMDB keywords for finer-grained taste profiles
 - **Feedback loop** — Dismiss items you don't want, rate what you've watched, profile rebuilds instantly
 - **Auto-detects anime** — Genre heuristics + origin language detection
-- **Fuzzy title matching** — Levenshtein distance resolver for Plex → TMDB catalog mapping
+- **Fuzzy title matching** — Levenshtein distance resolver for catalog mapping
 - **Rich web UI** — 6 tabs (For You, Movies, TV, Anime, Trending, Hidden Gems), themable accents, localStorage persistence
-- **Multi-user support** — Each user gets their own taste profile and recommendations
+- **Import from anywhere:**
+  - **Plex** — Watch history import with library scanning
+  - **AniList** — Anime list sync (improves anime recommendations significantly)
+  - **Trakt** — Movie/TV watch history & ratings sync
+- **Overseerr/Seerr integration** — Request media directly to your Overseerr or Seerr instance from Mediocre's UI
 
 ## Tech Stack
 
@@ -33,6 +37,8 @@ Because every recommendation app promises to change your life. This one just giv
 | Frontend | React 18 + Vite |
 | Catalog | TMDB API (synced locally, no API calls on hot path) |
 | Media Server | **Plex** (Jellyfin not supported — I don't run one to test it) |
+| External Lists | AniList API, Trakt API |
+| Request Proxying | Overseerr / Seerr API |
 
 ## Performance
 
@@ -49,6 +55,9 @@ All scoring is pre-computed or cached in SQLite. User requests never hit externa
 - Node.js ≥18
 - A [TMDB API key](https://www.themoviedb.org/settings/api) (free)
 - A [Plex server](https://www.plex.tv/) with content
+- (Optional) [AniList](https://anilist.co/) account for anime sync
+- (Optional) [Trakt](https://trakt.tv/) account for watch history import
+- (Optional) [Overseerr](https://overseerr.dev/) or [Seerr](https://seerr.dev/) instance for requesting
 
 ### Install
 
@@ -59,7 +68,7 @@ cd mediocre
 # Server
 cd server
 npm install
-cp ../.env.example .env   # Edit with your TMDB key & Plex URL
+cp ../.env.example .env   # Edit with your keys & URLs
 npm run migrate            # Run schema + feedback migrations
 node index.js &            # Starts on port 3000
 
@@ -74,9 +83,24 @@ Open http://localhost:5173 and enjoy your adequately personalized recommendation
 ### Configuration (.env)
 
 ```env
+# Required
 TMDB_API_KEY=your_tmdb_key_here
 PLEX_URL=http://localhost:32400
 PLEX_TOKEN=your_plex_token_here
+
+# Optional - external list imports
+ANILIST_TOKEN=your_anilist_token
+TRAKT_CLIENT_ID=your_trakt_client_id
+TRAKT_CLIENT_SECRET=your_trakt_client_secret
+TRAKT_ACCESS_TOKEN=your_trakt_access_token
+
+# Optional - Overseerr/Seerr request proxy
+OVERSEERR_URL=https://overseerr.example.com
+OVERSEERR_API_KEY=your_overseerr_key
+SEERR_URL=https://seerr.example.com
+SEERR_API_KEY=your_seerr_key
+
+# Optional
 PORT=3000
 DB_PATH=./data/seerr.db
 ```
@@ -97,31 +121,47 @@ node server/jobs/tmdbKeywordSync.js
 ## Architecture
 
 ```
-┌─────────────┐     ┌──────────────┐     ┌───────┐
-│   Plex      │────▶│  Import Job  │────▶│  DB   │
-│   Server    │     │              │     │       │
-└─────────────┘     └──────────────┘     │       │
-                                          │ SQLite│
-┌─────────────┐     ┌──────────────┐     │       │
-│   TMDB API  │────▶│  Sync Jobs   │────▶│       │
-│             │     │ (metadata +  │     │       │
-│             │     │  keywords)   │     │       │
-└─────────────┘     └──────────────┘     └──┬────┘
-                                               │
-┌─────────────┐     ┌──────────────┐          ▼
-│   React UI  │◀────│  API Routes  │◀──── Scoring Engine
-│  (Vite dev) │     │  /api/v2/... │    (3-layer ensemble)
-└─────────────┘     └──────────────┘
+┌──────────┐  ┌──────────┐  ┌──────────┐
+│  Plex    │  │ AniList  │  │  Trakt   │
+│  Server  │  │          │  │          │
+└────┬─────┘  └────┬─────┘  └────┬─────┘
+     │              │              │
+     ▼              ▼              ▼
+┌─────────────────────────────────────┐
+│           Import / Sync Jobs        │
+│  (plexImport, anilistSync, trakt)  │
+└──────────────────┬──────────────────┘
+                   │
+                   ▼
+┌──────────────────────────────────────┐     ┌──────────────┐
+│           SQLite DB                  │     │  TMDB API    │
+│  (catalog, history, ratings, taste) │◀────│  (metadata +  │
+│                                      │     │   keywords)  │
+└──────────────────┬───────────────────┘     └──────────────┘
+                   │
+                   ▼
+         ┌─────────────────┐
+         │  Scoring Engine  │
+         │  (3-layer       │
+         │   ensemble)      │
+         └────────┬────────┘
+                  │
+     ┌────────────┼────────────┐
+     ▼            ▼            ▼
+┌─────────┐ ┌─────────┐ ┌─────────────┐
+│  API    │ │Request  │ │  React UI   │
+│ Routes  │ │Proxy    │ │(6 tabs,     │
+│         │ │→Overseerr│ │ themes)     │
+└─────────┘ └─────────┘ └─────────────┘
 ```
 
 ### Database Schema (key tables)
 
-- `users` — User accounts
 - `items` — TMDB catalog (movie/tv/anime) with popularity scores
-- `watch_history` — What each user watched, with ratings
+- `watch_history` — What you watched, with ratings
 - `user_ratings` — Explicit 1–10 ratings (overrides watch history rating)
-- `dismissed_items` — Items user rejected (with TTL)
-- `taste_profiles` — Pre-computed genre + keyword weights per user
+- `dismissed_items` — Items you rejected (with TTL)
+- `taste_profiles` — Pre-computed genre + keyword weights
 - `genres` / `keywords` / `item_genres` / `item_keywords` — Taxonomy
 
 ## Development Status
@@ -129,12 +169,13 @@ node server/jobs/tmdbKeywordSync.js
 **Phase 4 COMPLETE ✅**
 
 - [x] Project scaffolding (23-table schema, Express, migrations)
-- [x] TMDB catalog pipeline (206+ items, genre assignments, disk-cached API client)
+- [x] TMDB catalog pipeline (200+ items, genre assignments, disk-cached API client)
 - [x] Scoring engine (3-layer ensemble with rating weights)
 - [x] Feedback system (dismissals, explicit ratings, profile rebuild)
 - [x] Keyword sync & keyword-weighted scoring
-- [x] Fuzzy title resolver (Plex → TMDB mapping)
-- [x] Multi-user collaborative filtering
+- [x] Fuzzy title resolver (catalog matching)
+- [x] Plex + AniList + Trakt import/sync
+- [x] Overseerr/Seerr request integration
 - [x] Rich frontend (6 tabs, themes, responsive)
 
 ## License
