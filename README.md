@@ -1,148 +1,146 @@
 # 😐 Mediocre
 
-<p align="center">
-  <strong>A self-hosted media recommendation engine.</strong><br>
-  <em>It's not bad. It's just... mediocre.</em>
-</p>
+> **A self-hosted media recommendation engine. It's not bad, it's just... mediocre.**
 
-<p align="center">
-  <a href="#features">Features</a> •
-  <a href="#quick-start">Quick Start</a> •
-  <a href="#architecture">Architecture</a> •
-  <a href="#configuration">Configuration</a> •
-  <a href="#contributing">Contributing</a>
-</p>
+[![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
 
----
+Mediocre is a fast, self-hosted recommendation system that learns what you like from your Plex watch history and suggests what to watch next. Cross-domain (movies, TV, anime), multi-user, and served from SQLite in **under 50ms**.
 
-## Features
+## Why "Mediocre"?
 
-- **🎬 Cross-Domain Recommendations** — Anime, TV, and movies all in one feed, with intelligent bridging between domains
-- **⚡ Blazing Fast** — Pre-computed scores served from SQLite (<50ms response times)
-- **🎛️ User Controls** — Genre filters, obscurity slider (mainstream ↔ hidden gems), domain mixer
-- **🔍 Score Transparency** — Every recommendation shows *why* it was recommended
-- **🧊 Cold-Start Ready** — Works even with zero watch history using content-based analysis
-- **📦 Self-Contained** — No Trakt/AniList dependency. Just Plex/Jellyfin + TMDB
-- **🔓 Open Source** — MIT licensed, community bridge mappings via PRs
+Because every recommendation app promises to change your life. This one just gives you solid suggestions and gets out of your way. No gamification, no social feeds, no dark patterns. Just... adequate recommendations. 😐
+
+## What It Actually Does
+
+- **Learns your taste** from Plex watch history + explicit ratings (1–10)
+- **3-Layer Ensemble Scoring Engine:**
+  - **Content Filtering (50%)** — Genre & keyword matching weighted by your ratings
+  - **Collaborative Filtering (30%)** — Jaccard similarity between users' watch histories
+  - **Popularity/Recency (20%)** — TMDB popularity × release year decay
+- **Keyword-aware recommendations** — Syncs TMDB keywords for finer-grained taste profiles
+- **Feedback loop** — Dismiss items you don't want, rate what you've watched, profile rebuilds instantly
+- **Auto-detects anime** — Genre heuristics + origin language detection
+- **Fuzzy title matching** — Levenshtein distance resolver for Plex → TMDB catalog mapping
+- **Rich web UI** — 6 tabs (For You, Movies, TV, Anime, Trending, Hidden Gems), themable accents, localStorage persistence
+- **Multi-user support** — Each user gets their own taste profile and recommendations
+
+## Tech Stack
+
+| Component | Technology |
+|-----------|-----------|
+| Backend | Node.js + Express (ESM) |
+| Database | SQLite via `better-sqlite3` (WAL mode, 64MB cache) |
+| Frontend | React 18 + Vite |
+| Catalog | TMDB API (synced locally, no API calls on hot path) |
+| Media Server | **Plex** (Jellyfin not supported — I don't run one to test it) |
+
+## Performance
+
+All scoring is pre-computed or cached in SQLite. User requests never hit external APIs:
+
+- **Response time:** <50ms (measured 18–40ms on test hardware)
+- **Full-text search:** FTS5 enabled
+- **Schema:** 23+ tables with migration system
 
 ## Quick Start
 
 ### Prerequisites
 
-- Node.js ≥ 18
+- Node.js ≥18
 - A [TMDB API key](https://www.themoviedb.org/settings/api) (free)
-- A Plex or Jellyfin server (optional, for watch history import)
+- A [Plex server](https://www.plex.tv/) with content
 
 ### Install
 
 ```bash
-git clone https://github.com/mediocre-rec/mediocre.git
+git clone https://github.com/kaishi00/mediocre.git
 cd mediocre
 
 # Server
 cd server
 npm install
-cp ../.env.example .env   # Edit with your TMDB API key
-npm start
+cp ../.env.example .env   # Edit with your TMDB key & Plex URL
+npm run migrate            # Run schema + feedback migrations
+node index.js &            # Starts on port 3000
 
 # Client (separate terminal)
-cd client
+cd ../client
 npm install
-npm run dev
+npm run dev                # Starts dev server with API proxy
 ```
 
-Then open http://localhost:5173 (client dev server proxies to backend at :3000).
+Open http://localhost:5173 and enjoy your adequately personalized recommendations.
 
-### Docker (coming soon)
+### Configuration (.env)
+
+```env
+TMDB_API_KEY=your_tmdb_key_here
+PLEX_URL=http://localhost:32400
+PLEX_TOKEN=your_plex_token_here
+PORT=3000
+DB_PATH=./data/seerr.db
+```
+
+### Background Jobs
 
 ```bash
-# docker-compose.yml — coming in v1.1
+# Import watched items from Plex
+node server/jobs/plexImport.js
+
+# Sync movie/TV metadata from TMDB
+node server/jobs/tmdbSync.js
+
+# Pull keywords from TMDB for all catalog items (enables keyword-weighted scoring)
+node server/jobs/tmdbKeywordSync.js
 ```
 
 ## Architecture
 
-### 3-Layer Ensemble Algorithm
+```
+┌─────────────┐     ┌──────────────┐     ┌───────┐
+│   Plex      │────▶│  Import Job  │────▶│  DB   │
+│   Server    │     │              │     │       │
+└─────────────┘     └──────────────┘     │       │
+                                          │ SQLite│
+┌─────────────┐     ┌──────────────┐     │       │
+│   TMDB API  │────▶│  Sync Jobs   │────▶│       │
+│             │     │ (metadata +  │     │       │
+│             │     │  keywords)   │     │       │
+└─────────────┘     └──────────────┘     └──┬────┘
+                                               │
+┌─────────────┐     ┌──────────────┐          ▼
+│   React UI  │◀────│  API Routes  │◀──── Scoring Engine
+│  (Vite dev) │     │  /api/v2/... │    (3-layer ensemble)
+└─────────────┘     └──────────────┘
+```
 
-| Layer | What it does | Weight |
-|-------|-------------|--------|
-| **Content Filtering** | Genre/keyword/taste profile matching with recency weighting | 50% |
-| **Collaborative Filtering** | Jaccard user similarity from watch history overlap | 30% |
-| **Popularity/Recency** | TMDB popularity log-norm × release year decay | 20% |
+### Database Schema (key tables)
 
-### Performance Strategy
+- `users` — User accounts
+- `items` — TMDB catalog (movie/tv/anime) with popularity scores
+- `watch_history` — What each user watched, with ratings
+- `user_ratings` — Explicit 1–10 ratings (overrides watch history rating)
+- `dismissed_items` — Items user rejected (with TTL)
+- `taste_profiles` — Pre-computed genre + keyword weights per user
+- `genres` / `keywords` / `item_genres` / `item_keywords` — Taxonomy
 
-- All scoring **pre-computed** in background jobs / on-demand via API
-- User requests served from **SQLite cache** (<50ms response)
-- No external API calls on the hot path
-- Full score breakdowns persisted per recommendation
+## Development Status
 
-## Configuration
+**Phase 4 COMPLETE ✅**
 
-All config via environment variables (see [`.env.example`](/.env.example)):
-
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `TMDB_API_KEY` | ✅ | Your TMDB API key |
-| `DB_PATH` | ❌ | Path to SQLite database (`./data/mediocre.db`) |
-| `PLEX_URL` | ❌ | Plex server URL (for history import) |
-| `PLEX_TOKEN` | ❌ | Plex access token (for history import) |
-| `PORT` | ❌ | Server port (`3000`) |
-
-## User Controls
-
-Mediocre puts your users in charge of what they see:
-
-- **Genre Filter** — Multi-select genres to boost or hard-exclude
-- **Obscurity Slider** — Mainstream hits ↔ hidden gems
-- **Domain Mixer** — Balance anime / TV / movie recommendations
-- **Score Breakdown** — See exactly why each item was recommended
-
-## Project Status
-
-**v1.0 — MVP Complete ✅**
-
-- [x] SQLite database schema with full-text search
-- [x] TMDB metadata caching & sync
-- [x] Content-based scoring engine (Layer 1)
-- [x] Collaborative filtering from watch history (Layer 2)
-- [x] Popularity/recency scoring (Layer 3)
-- [x] REST API with <50ms response times
-- [x] React frontend (Vite)
-- [x] Plex watch history import
-- [x] User controls (genre filter, obscurity slider)
-
-**Roadmap:**
-
-- [ ] Docker Compose deployment
-- [ ] Jellyfin support
-- [ ] Cross-domain bridge (anime ↔ live-action mappings)
-- [ ] Trakt/AniList one-time import
-- [ ] Evaluation framework (precision@K testing)
-- [ ] Multi-user support UI
-
-## Tech Stack
-
-**Backend:** Node.js · Express · better-sqlite3 · TMDB API  
-**Frontend:** React 18 · Vite · Pure CSS  
-**Database:** SQLite (WAL mode, FTS5)
-
-## Contributing
-
-PRs welcome! The best places to contribute:
-
-1. **Bridge Mappings** — Add anime↕live-action connections to help cross-domain recs
-2. **Genre/Keyword Tuning** — Improve content classification weights
-3. **Docker Support** — Help us ship a `docker-compose.yml`
-4. **Jellyfin Integration** — Expand beyond Plex
-
-See [`docs/IDEA.md`](docs/IDEA.md) for the full design document and algorithm specification.
+- [x] Project scaffolding (23-table schema, Express, migrations)
+- [x] TMDB catalog pipeline (206+ items, genre assignments, disk-cached API client)
+- [x] Scoring engine (3-layer ensemble with rating weights)
+- [x] Feedback system (dismissals, explicit ratings, profile rebuild)
+- [x] Keyword sync & keyword-weighted scoring
+- [x] Fuzzy title resolver (Plex → TMDB mapping)
+- [x] Multi-user collaborative filtering
+- [x] Rich frontend (6 tabs, themes, responsive)
 
 ## License
 
-[MIT](LICENSE) — Do whatever you want with it. It's mediocre, after all.
+MIT. Do whatever you want with it. It's just mediocre code anyway.
 
 ---
 
-<p align="center">
-  <sub>Made with 👀 by people who couldn't decide what to watch next.</sub>
-</p>
+*Built with mild frustration at existing recommendation systems that over-promise and under-deliver.*
