@@ -1,0 +1,21 @@
+{
+  "name": "mediocre",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Mediocre — A self-hosted media recommendation engine. It's not bad, it's just mediocre.",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "migrate": "node db/migrate_feedback.js",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "better-sqlite3": "^9.4.3",
+    "dotenv": "^16.4.1",
+    "express": "^4.18.2"
+  },
+  "devDependencies": {},
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
