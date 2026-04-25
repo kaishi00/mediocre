@@ -164,6 +164,47 @@ node server/jobs/tmdbKeywordSync.js
 - `taste_profiles` — Pre-computed genre + keyword weights
 - `genres` / `keywords` / `item_genres` / `item_keywords` — Taxonomy
 
+## Recommendation Engine Settings
+
+All configuration is done from the **Settings → Recommendations** panel in the UI — no config files to edit for tuning.
+
+### Catalogue & Scoring
+
+| Setting | Options | Default |
+|---------|---------|---------|
+| **Catalogue Size** | Lean (~500) · Standard (~1000) · Generous (~2000) | Standard |
+| **Max Items** | Number of top results per scoring pass | 100+ |
+
+### Taste Profile Filters
+
+Narrow recommendations by **themes** (genres) and **languages**. Select multiple to build your taste profile — the engine weights matches against your selected preferences.
+
+**Supported themes:** Anime, Animation, Comedy, Crime, Documentary, Drama, Adventure, Fantasy, Horror, Kids, Music, Mystery, Romance, Science Fiction, TV Movie, Thriller, Western
+
+**Supported languages:** English, Japanese, Korean, Chinese, Cantonese, French, Spanish, German, Italian, Portuguese, Czech, Swedish, Danish, Polish, Norwegian, Icelandic, Gaelic, Hindi, Thai
+
+### Results Distribution
+
+Control how many items appear in each tab via **Results Per Tab**:
+
+| Tab | Default | Description |
+|-----|---------|-------------|
+| **For You** | 50 | Personalized ensemble-scored recommendations |
+| **Movies** | 50 | Top scored films |
+| **TV Shows** | 50 | Top scored series |
+| **Anime Movies** | 100 | Top scored anime films (higher default — catalogue is smaller) |
+| **Anime Series** | 100 | Top scored anime series (higher default — catalogue is smaller) |
+| **Trending** | 50 | TMDB popularity-sorted fresh picks |
+| **Hidden Gems** | 50 | Lower-popularity high-scored discoveries |
+
+### Type Balance
+
+**Type Ratio** slider balances movie vs. TV show results across all tabs. Drag to favor one format over the other based on your viewing habits.
+
+### Sync
+
+The **Sync ID** tracks your last full profile rebuild. Re-sync anytime after importing new watch history or changing ratings — the engine rebuilds your taste profile from scratch using all available data.
+
 ## Development Status
 
 **Phase 4 COMPLETE ✅**
